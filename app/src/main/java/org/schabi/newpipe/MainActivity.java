@@ -20,181 +20,307 @@
 
 package org.schabi.newpipe;
 
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.preference.PreferenceManager;
-import android.support.annotation.NonNull;
-import android.support.design.widget.NavigationView;
-import android.support.v4.app.Fragment;
-import android.support.v4.view.GravityCompat;
-import android.support.v4.widget.DrawerLayout;
-import android.support.v7.app.ActionBar;
-import android.support.v7.app.ActionBarDrawerToggle;
-import android.support.v7.app.AppCompatActivity;
-import android.support.v7.widget.Toolbar;
 import android.util.Log;
-import android.view.Gravity;
+import android.view.KeyEvent;
+import android.view.LayoutInflater;
 import android.view.Menu;
-import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.View;
-import android.view.Window;
-import android.view.WindowManager;
-import android.widget.Button;
-import android.widget.ImageView;
-import android.widget.TextView;
+import android.view.ViewGroup;
+import android.webkit.WebView;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
+import android.widget.FrameLayout;
+import android.widget.Spinner;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.appcompat.app.ActionBar;
+import androidx.appcompat.app.ActionBarDrawerToggle;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+import androidx.core.view.GravityCompat;
+import androidx.drawerlayout.widget.DrawerLayout;
+import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentContainerView;
+import androidx.fragment.app.FragmentManager;
+import androidx.preference.PreferenceManager;
+
+import com.google.android.material.bottomsheet.BottomSheetBehavior;
+
+import org.schabi.newpipe.databinding.ActivityMainBinding;
+import org.schabi.newpipe.databinding.DrawerHeaderBinding;
+import org.schabi.newpipe.databinding.DrawerLayoutBinding;
+import org.schabi.newpipe.databinding.InstanceSpinnerLayoutBinding;
+import org.schabi.newpipe.databinding.ToolbarLayoutBinding;
+import org.schabi.newpipe.error.ErrorUtil;
 import org.schabi.newpipe.extractor.NewPipe;
 import org.schabi.newpipe.extractor.StreamingService;
+import org.schabi.newpipe.extractor.comments.CommentsInfoItem;
 import org.schabi.newpipe.extractor.exceptions.ExtractionException;
+import org.schabi.newpipe.extractor.services.peertube.PeertubeInstance;
 import org.schabi.newpipe.fragments.BackPressable;
 import org.schabi.newpipe.fragments.MainFragment;
 import org.schabi.newpipe.fragments.detail.VideoDetailFragment;
+import org.schabi.newpipe.fragments.list.comments.CommentRepliesFragment;
 import org.schabi.newpipe.fragments.list.search.SearchFragment;
-import org.schabi.newpipe.report.ErrorActivity;
+import org.schabi.newpipe.local.feed.notifications.NotificationWorker;
+import org.schabi.newpipe.player.Player;
+import org.schabi.newpipe.player.event.OnKeyDownListener;
+import org.schabi.newpipe.player.helper.PlayerHolder;
+import org.schabi.newpipe.player.playqueue.PlayQueue;
+import org.schabi.newpipe.settings.UpdateSettingsFragment;
+import org.schabi.newpipe.settings.migration.MigrationManager;
 import org.schabi.newpipe.util.Constants;
+import org.schabi.newpipe.util.DeviceUtils;
 import org.schabi.newpipe.util.KioskTranslator;
+import org.schabi.newpipe.util.Localization;
 import org.schabi.newpipe.util.NavigationHelper;
+import org.schabi.newpipe.util.PeertubeHelper;
 import org.schabi.newpipe.util.PermissionHelper;
+import org.schabi.newpipe.util.ReleaseVersionUtil;
+import org.schabi.newpipe.util.SerializedCache;
 import org.schabi.newpipe.util.ServiceHelper;
 import org.schabi.newpipe.util.StateSaver;
 import org.schabi.newpipe.util.ThemeHelper;
+import org.schabi.newpipe.util.external_communication.ShareUtils;
+import org.schabi.newpipe.views.FocusOverlayView;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
 
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = "MainActivity";
+    @SuppressWarnings("ConstantConditions")
     public static final boolean DEBUG = !BuildConfig.BUILD_TYPE.equals("release");
 
-    private ActionBarDrawerToggle toggle = null;
-    private DrawerLayout drawer = null;
-    private NavigationView drawerItems = null;
-    private TextView headerServiceView = null;
+    private ActivityMainBinding mainBinding;
+    private DrawerHeaderBinding drawerHeaderBinding;
+    private DrawerLayoutBinding drawerLayoutBinding;
+    private ToolbarLayoutBinding toolbarLayoutBinding;
+
+    private ActionBarDrawerToggle toggle;
 
     private boolean servicesShown = false;
-    private ImageView serviceArrow;
 
-    private static final int ITEM_ID_SUBSCRIPTIONS = - 1;
-    private static final int ITEM_ID_FEED = - 2;
-    private static final int ITEM_ID_BOOKMARKS = - 3;
-    private static final int ITEM_ID_DOWNLOADS = - 4;
-    private static final int ITEM_ID_HISTORY = - 5;
+    private BroadcastReceiver broadcastReceiver;
+
+    private static final int ITEM_ID_SUBSCRIPTIONS = -1;
+    private static final int ITEM_ID_FEED = -2;
+    private static final int ITEM_ID_BOOKMARKS = -3;
+    private static final int ITEM_ID_DOWNLOADS = -4;
+    private static final int ITEM_ID_HISTORY = -5;
     private static final int ITEM_ID_SETTINGS = 0;
-    private static final int ITEM_ID_ABOUT = 1;
+    private static final int ITEM_ID_DONATION = 1;
+    private static final int ITEM_ID_ABOUT = 2;
 
     private static final int ORDER = 0;
+    public static final String KEY_IS_IN_BACKGROUND = "is_in_background";
 
+    private SharedPreferences sharedPreferences;
+    private SharedPreferences.Editor sharedPrefEditor;
     /*//////////////////////////////////////////////////////////////////////////
     // Activity's LifeCycle
     //////////////////////////////////////////////////////////////////////////*/
 
     @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        if (DEBUG) Log.d(TAG, "onCreate() called with: savedInstanceState = [" + savedInstanceState + "]");
-
-        ThemeHelper.setTheme(this, ServiceHelper.getSelectedServiceId(this));
-
-        super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            Window w = getWindow();
-            w.setFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS, WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
+    protected void onCreate(final Bundle savedInstanceState) {
+        if (DEBUG) {
+            Log.d(TAG, "onCreate() called with: "
+                    + "savedInstanceState = [" + savedInstanceState + "]");
         }
 
-        if (getSupportFragmentManager() != null && getSupportFragmentManager().getBackStackEntryCount() == 0) {
+        Localization.migrateAppLanguageSettingIfNecessary(getApplicationContext());
+        ThemeHelper.setDayNightMode(this);
+        ThemeHelper.setTheme(this, ServiceHelper.getSelectedServiceId(this));
+
+        // Fixes text color turning black in dark/black mode:
+        // https://github.com/TeamNewPipe/NewPipe/issues/12016
+        // For further reference see: https://issuetracker.google.com/issues/37124582
+        if (DeviceUtils.supportsWebView()) {
+            try {
+                new WebView(this);
+            } catch (final Throwable e) {
+                if (DEBUG) {
+                    Log.e(TAG, "Failed to create WebView", e);
+                }
+            }
+        }
+
+        super.onCreate(savedInstanceState);
+        sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this);
+        sharedPrefEditor = sharedPreferences.edit();
+
+        mainBinding = ActivityMainBinding.inflate(getLayoutInflater());
+        drawerLayoutBinding = mainBinding.drawerLayout;
+        drawerHeaderBinding = DrawerHeaderBinding.bind(drawerLayoutBinding.navigation
+                .getHeaderView(0));
+        toolbarLayoutBinding = mainBinding.toolbarLayout;
+        setContentView(mainBinding.getRoot());
+
+        if (getSupportFragmentManager().getBackStackEntryCount() == 0) {
             initFragments();
         }
 
-        setSupportActionBar(findViewById(R.id.toolbar));
+        setSupportActionBar(toolbarLayoutBinding.toolbar);
         try {
             setupDrawer();
-        } catch (Exception e) {
-            ErrorActivity.reportUiError(this, e);
+        } catch (final Exception e) {
+            ErrorUtil.showUiErrorSnackbar(this, "Setting up drawer", e);
+        }
+        if (DeviceUtils.isTv(this)) {
+            FocusOverlayView.setupFocusObserver(this);
+        }
+        openMiniPlayerUponPlayerStarted();
+
+        if (PermissionHelper.checkPostNotificationsPermission(this,
+                PermissionHelper.POST_NOTIFICATIONS_REQUEST_CODE)) {
+            // Schedule worker for checking for new streams and creating corresponding notifications
+            // if this is enabled by the user.
+            NotificationWorker.initialize(this);
+        }
+        if (!UpdateSettingsFragment.wasUserAskedForConsent(this)
+                && !App.getApp().isFirstRun()
+                && ReleaseVersionUtil.INSTANCE.isReleaseApk()) {
+            UpdateSettingsFragment.askForConsentToUpdateChecks(this);
+        }
+
+        MigrationManager.showUserInfoIfPresent(this);
+    }
+
+    @Override
+    protected void onPostCreate(final Bundle savedInstanceState) {
+        super.onPostCreate(savedInstanceState);
+
+        final App app = App.getApp();
+
+        if (sharedPreferences.getBoolean(app.getString(R.string.update_app_key), false)
+                && sharedPreferences
+                .getBoolean(app.getString(R.string.update_check_consent_key), false)) {
+            // Start the worker which is checking all conditions
+            // and eventually searching for a new version.
+            NewVersionWorker.enqueueNewVersionCheckingWork(app, false);
         }
     }
 
-    private void setupDrawer() throws Exception {
-        final Toolbar toolbar = findViewById(R.id.toolbar);
-        drawer = findViewById(R.id.drawer_layout);
-        drawerItems = findViewById(R.id.navigation);
+    @Override
+    protected void onStart() {
+        super.onStart();
+        sharedPrefEditor.putBoolean(KEY_IS_IN_BACKGROUND, false).apply();
+        Log.d(TAG, "App moved to foreground");
+    }
 
-        //Tabs
-        int currentServiceId = ServiceHelper.getSelectedServiceId(this);
-        StreamingService service = NewPipe.getService(currentServiceId);
+    @Override
+    protected void onStop() {
+        super.onStop();
+        sharedPrefEditor.putBoolean(KEY_IS_IN_BACKGROUND, true).apply();
+        Log.d(TAG, "App moved to background");
+    }
+    private void setupDrawer() throws ExtractionException {
+        addDrawerMenuForCurrentService();
 
-        int kioskId = 0;
-
-        for (final String ks : service.getKioskList().getAvailableKiosks()) {
-            drawerItems.getMenu()
-                    .add(R.id.menu_tabs_group, kioskId, 0, KioskTranslator.getTranslatedKioskName(ks, this))
-                    .setIcon(KioskTranslator.getKioskIcons(ks, this));
-            kioskId ++;
-        }
-
-        drawerItems.getMenu()
-                .add(R.id.menu_tabs_group, ITEM_ID_SUBSCRIPTIONS, ORDER, R.string.tab_subscriptions)
-                .setIcon(ThemeHelper.resolveResourceIdFromAttr(this, R.attr.ic_channel));
-        drawerItems.getMenu()
-                .add(R.id.menu_tabs_group, ITEM_ID_FEED, ORDER, R.string.fragment_whats_new)
-                .setIcon(ThemeHelper.resolveResourceIdFromAttr(this, R.attr.rss));
-        drawerItems.getMenu()
-                .add(R.id.menu_tabs_group, ITEM_ID_BOOKMARKS, ORDER, R.string.tab_bookmarks)
-                .setIcon(ThemeHelper.resolveResourceIdFromAttr(this, R.attr.ic_bookmark));
-        drawerItems.getMenu()
-                .add(R.id.menu_tabs_group, ITEM_ID_DOWNLOADS, ORDER, R.string.downloads)
-                .setIcon(ThemeHelper.resolveResourceIdFromAttr(this, R.attr.download));
-        drawerItems.getMenu()
-                .add(R.id.menu_tabs_group, ITEM_ID_HISTORY, ORDER, R.string.action_history)
-                .setIcon(ThemeHelper.resolveResourceIdFromAttr(this, R.attr.history));
-
-        //Settings and About
-        drawerItems.getMenu()
-                .add(R.id.menu_options_about_group, ITEM_ID_SETTINGS, ORDER, R.string.settings)
-                .setIcon(ThemeHelper.resolveResourceIdFromAttr(this, R.attr.settings));
-        drawerItems.getMenu()
-                .add(R.id.menu_options_about_group, ITEM_ID_ABOUT, ORDER, R.string.tab_about)
-                .setIcon(ThemeHelper.resolveResourceIdFromAttr(this, R.attr.info));
-
-        toggle = new ActionBarDrawerToggle(this, drawer, toolbar, R.string.drawer_open, R.string.drawer_close);
+        toggle = new ActionBarDrawerToggle(this, mainBinding.getRoot(),
+                toolbarLayoutBinding.toolbar, R.string.drawer_open, R.string.drawer_close);
         toggle.syncState();
-        drawer.addDrawerListener(toggle);
-        drawer.addDrawerListener(new DrawerLayout.SimpleDrawerListener() {
+        mainBinding.getRoot().addDrawerListener(toggle);
+        mainBinding.getRoot().addDrawerListener(new DrawerLayout.SimpleDrawerListener() {
             private int lastService;
 
             @Override
-            public void onDrawerOpened(View drawerView) {
+            public void onDrawerOpened(final View drawerView) {
                 lastService = ServiceHelper.getSelectedServiceId(MainActivity.this);
             }
 
             @Override
-            public void onDrawerClosed(View drawerView) {
-                if(servicesShown) {
+            public void onDrawerClosed(final View drawerView) {
+                if (servicesShown) {
                     toggleServices();
                 }
                 if (lastService != ServiceHelper.getSelectedServiceId(MainActivity.this)) {
-                    new Handler(Looper.getMainLooper()).post(MainActivity.this::recreate);
+                    ActivityCompat.recreate(MainActivity.this);
                 }
             }
         });
 
-        drawerItems.setNavigationItemSelectedListener(this::drawerItemSelected);
+        drawerLayoutBinding.navigation.setNavigationItemSelectedListener(this::drawerItemSelected);
         setupDrawerHeader();
     }
 
-    private boolean drawerItemSelected(MenuItem item) {
+    /**
+     * Builds the drawer menu for the current service.
+     *
+     * @throws ExtractionException if the service didn't provide available kiosks
+     */
+    private void addDrawerMenuForCurrentService() throws ExtractionException {
+        //Tabs
+        drawerLayoutBinding.navigation.getMenu()
+                .add(R.id.menu_tabs_group, ITEM_ID_SUBSCRIPTIONS, ORDER,
+                        R.string.tab_subscriptions)
+                .setIcon(R.drawable.ic_tv);
+        drawerLayoutBinding.navigation.getMenu()
+                .add(R.id.menu_tabs_group, ITEM_ID_FEED, ORDER, R.string.fragment_feed_title)
+                .setIcon(R.drawable.ic_subscriptions);
+        drawerLayoutBinding.navigation.getMenu()
+                .add(R.id.menu_tabs_group, ITEM_ID_BOOKMARKS, ORDER, R.string.tab_bookmarks)
+                .setIcon(R.drawable.ic_bookmark);
+        drawerLayoutBinding.navigation.getMenu()
+                .add(R.id.menu_tabs_group, ITEM_ID_DOWNLOADS, ORDER, R.string.downloads)
+                .setIcon(R.drawable.ic_file_download);
+        drawerLayoutBinding.navigation.getMenu()
+                .add(R.id.menu_tabs_group, ITEM_ID_HISTORY, ORDER, R.string.action_history)
+                .setIcon(R.drawable.ic_history);
+
+        //Kiosks
+        final int currentServiceId = ServiceHelper.getSelectedServiceId(this);
+        final StreamingService service = NewPipe.getService(currentServiceId);
+
+        int kioskMenuItemId = 0;
+
+        for (final String ks : service.getKioskList().getAvailableKiosks()) {
+            drawerLayoutBinding.navigation.getMenu()
+                    .add(R.id.menu_kiosks_group, kioskMenuItemId, 0, KioskTranslator
+                            .getTranslatedKioskName(ks, this))
+                    .setIcon(KioskTranslator.getKioskIcon(ks));
+            kioskMenuItemId++;
+        }
+
+        //Settings and About
+        drawerLayoutBinding.navigation.getMenu()
+                .add(R.id.menu_options_about_group, ITEM_ID_SETTINGS, ORDER, R.string.settings)
+                .setIcon(R.drawable.ic_settings);
+        drawerLayoutBinding.navigation.getMenu()
+                .add(R.id.menu_options_about_group, ITEM_ID_DONATION, ORDER,
+                        R.string.donation_title)
+                .setIcon(R.drawable.volunteer_activism_ic);
+        drawerLayoutBinding.navigation.getMenu()
+                .add(R.id.menu_options_about_group, ITEM_ID_ABOUT, ORDER, R.string.tab_about)
+                .setIcon(R.drawable.ic_info_outline);
+    }
+
+    private boolean drawerItemSelected(final MenuItem item) {
         switch (item.getGroupId()) {
             case R.id.menu_services_group:
                 changeService(item);
                 break;
             case R.id.menu_tabs_group:
+                tabSelected(item);
+                break;
+            case R.id.menu_kiosks_group:
                 try {
-                    tabSelected(item);
-                } catch (Exception e) {
-                    ErrorActivity.reportUiError(this, e);
+                    kioskSelected(item);
+                } catch (final Exception e) {
+                    ErrorUtil.showUiErrorSnackbar(this, "Selecting drawer kiosk", e);
                 }
                 break;
             case R.id.menu_options_about_group:
@@ -204,23 +330,27 @@ public class MainActivity extends AppCompatActivity {
                 return false;
         }
 
-        drawer.closeDrawers();
+        mainBinding.getRoot().closeDrawers();
         return true;
     }
 
-    private  void changeService(MenuItem item) {
-        drawerItems.getMenu().getItem(ServiceHelper.getSelectedServiceId(this)).setChecked(false);
+    private void changeService(final MenuItem item) {
+        drawerLayoutBinding.navigation.getMenu()
+                .getItem(ServiceHelper.getSelectedServiceId(this))
+                .setChecked(false);
         ServiceHelper.setSelectedServiceId(this, item.getItemId());
-        drawerItems.getMenu().getItem(ServiceHelper.getSelectedServiceId(this)).setChecked(true);
+        drawerLayoutBinding.navigation.getMenu()
+                .getItem(ServiceHelper.getSelectedServiceId(this))
+                .setChecked(true);
     }
 
-    private void tabSelected(MenuItem item) throws ExtractionException {
-        switch(item.getItemId()) {
+    private void tabSelected(final MenuItem item) {
+        switch (item.getItemId()) {
             case ITEM_ID_SUBSCRIPTIONS:
                 NavigationHelper.openSubscriptionFragment(getSupportFragmentManager());
                 break;
             case ITEM_ID_FEED:
-                NavigationHelper.openWhatsNewFragment(getSupportFragmentManager());
+                NavigationHelper.openFeedFragment(getSupportFragmentManager());
                 break;
             case ITEM_ID_BOOKMARKS:
                 NavigationHelper.openBookmarksFragment(getSupportFragmentManager());
@@ -231,28 +361,29 @@ public class MainActivity extends AppCompatActivity {
             case ITEM_ID_HISTORY:
                 NavigationHelper.openStatisticFragment(getSupportFragmentManager());
                 break;
-            default:
-                int currentServiceId = ServiceHelper.getSelectedServiceId(this);
-                StreamingService service = NewPipe.getService(currentServiceId);
-                String serviceName = "";
-
-                int kioskId = 0;
-                for (final String ks : service.getKioskList().getAvailableKiosks()) {
-                    if(kioskId == item.getItemId()) {
-                        serviceName = ks;
-                    }
-                    kioskId ++;
-                }
-
-                NavigationHelper.openKioskFragment(getSupportFragmentManager(), currentServiceId, serviceName);
-                break;
         }
     }
 
-    private void optionsAboutSelected(MenuItem item) {
-        switch(item.getItemId()) {
+    private void kioskSelected(final MenuItem item) throws ExtractionException {
+        final StreamingService currentService = ServiceHelper.getSelectedService(this);
+        int kioskMenuItemId = 0;
+        for (final String kioskId : currentService.getKioskList().getAvailableKiosks()) {
+            if (kioskMenuItemId == item.getItemId()) {
+                NavigationHelper.openKioskFragment(getSupportFragmentManager(),
+                        currentService.getServiceId(), kioskId);
+                break;
+            }
+            kioskMenuItemId++;
+        }
+    }
+
+    private void optionsAboutSelected(final MenuItem item) {
+        switch (item.getItemId()) {
             case ITEM_ID_SETTINGS:
                 NavigationHelper.openSettings(this);
+                break;
+            case ITEM_ID_DONATION:
+                ShareUtils.openUrlInBrowser(this, getString(R.string.donation_url));
                 break;
             case ITEM_ID_ABOUT:
                 NavigationHelper.openAbout(this);
@@ -261,88 +392,107 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void setupDrawerHeader() {
-        NavigationView navigationView = findViewById(R.id.navigation);
-        View hView =  navigationView.getHeaderView(0);
+        drawerHeaderBinding.drawerHeaderActionButton.setOnClickListener(view -> toggleServices());
 
-        serviceArrow = hView.findViewById(R.id.drawer_arrow);
-        headerServiceView = hView.findViewById(R.id.drawer_header_service_view);
-        Button action = hView.findViewById(R.id.drawer_header_action_button);
-        action.setOnClickListener(view -> {
-            toggleServices();
-        });
+        // If the current app name is bigger than the default "NewPipe" (7 chars),
+        // let the text view grow a little more as well.
+        if (getString(R.string.app_name).length() > "NewPipe".length()) {
+            final ViewGroup.LayoutParams layoutParams =
+                    drawerHeaderBinding.drawerHeaderNewpipeTitle.getLayoutParams();
+            layoutParams.width = ViewGroup.LayoutParams.WRAP_CONTENT;
+            drawerHeaderBinding.drawerHeaderNewpipeTitle.setLayoutParams(layoutParams);
+            drawerHeaderBinding.drawerHeaderNewpipeTitle.setMaxLines(2);
+            drawerHeaderBinding.drawerHeaderNewpipeTitle.setMinWidth(getResources()
+                    .getDimensionPixelSize(R.dimen.drawer_header_newpipe_title_default_width));
+            drawerHeaderBinding.drawerHeaderNewpipeTitle.setMaxWidth(getResources()
+                    .getDimensionPixelSize(R.dimen.drawer_header_newpipe_title_max_width));
+        }
     }
 
     private void toggleServices() {
         servicesShown = !servicesShown;
 
-        drawerItems.getMenu().removeGroup(R.id.menu_services_group);
-        drawerItems.getMenu().removeGroup(R.id.menu_tabs_group);
-        drawerItems.getMenu().removeGroup(R.id.menu_options_about_group);
+        drawerLayoutBinding.navigation.getMenu().removeGroup(R.id.menu_services_group);
+        drawerLayoutBinding.navigation.getMenu().removeGroup(R.id.menu_tabs_group);
+        drawerLayoutBinding.navigation.getMenu().removeGroup(R.id.menu_kiosks_group);
+        drawerLayoutBinding.navigation.getMenu().removeGroup(R.id.menu_options_about_group);
 
-        if(servicesShown) {
+        // Show up or down arrow
+        drawerHeaderBinding.drawerArrow.setImageResource(
+                servicesShown ? R.drawable.ic_arrow_drop_up : R.drawable.ic_arrow_drop_down);
+
+        if (servicesShown) {
             showServices();
         } else {
             try {
-                showTabs();
-            } catch (Exception e) {
-                ErrorActivity.reportUiError(this, e);
+                addDrawerMenuForCurrentService();
+            } catch (final Exception e) {
+                ErrorUtil.showUiErrorSnackbar(this, "Showing main page tabs", e);
             }
         }
     }
 
     private void showServices() {
-        serviceArrow.setImageResource(R.drawable.ic_arrow_up_white);
+        for (final StreamingService s : NewPipe.getServices()) {
+            final String title = s.getServiceInfo().getName();
 
-        for(StreamingService s : NewPipe.getServices()) {
-            final String title = s.getServiceInfo().getName() +
-                    (ServiceHelper.isBeta(s) ? " (beta)" : "");
-
-            drawerItems.getMenu()
+            final MenuItem menuItem = drawerLayoutBinding.navigation.getMenu()
                     .add(R.id.menu_services_group, s.getServiceId(), ORDER, title)
                     .setIcon(ServiceHelper.getIcon(s.getServiceId()));
+
+            // peertube specifics
+            if (s.getServiceId() == 3) {
+                enhancePeertubeMenu(menuItem);
+            }
         }
-        drawerItems.getMenu().getItem(ServiceHelper.getSelectedServiceId(this)).setChecked(true);
+        drawerLayoutBinding.navigation.getMenu()
+                .getItem(ServiceHelper.getSelectedServiceId(this))
+                .setChecked(true);
     }
 
-    private void showTabs() throws ExtractionException {
-        serviceArrow.setImageResource(R.drawable.ic_arrow_down_white);
-
-        //Tabs
-        int currentServiceId = ServiceHelper.getSelectedServiceId(this);
-        StreamingService service = NewPipe.getService(currentServiceId);
-
-        int kioskId = 0;
-
-        for (final String ks : service.getKioskList().getAvailableKiosks()) {
-            drawerItems.getMenu()
-                    .add(R.id.menu_tabs_group, kioskId, ORDER, KioskTranslator.getTranslatedKioskName(ks, this))
-                    .setIcon(KioskTranslator.getKioskIcons(ks, this));
-            kioskId ++;
+    private void enhancePeertubeMenu(final MenuItem menuItem) {
+        final PeertubeInstance currentInstance = PeertubeHelper.getCurrentInstance();
+        menuItem.setTitle(currentInstance.getName());
+        final Spinner spinner = InstanceSpinnerLayoutBinding.inflate(LayoutInflater.from(this))
+                .getRoot();
+        final List<PeertubeInstance> instances = PeertubeHelper.getInstanceList(this);
+        final List<String> items = new ArrayList<>();
+        int defaultSelect = 0;
+        for (final PeertubeInstance instance : instances) {
+            items.add(instance.getName());
+            if (instance.getUrl().equals(currentInstance.getUrl())) {
+                defaultSelect = items.size() - 1;
+            }
         }
+        final ArrayAdapter<String> adapter = new ArrayAdapter<>(this,
+                R.layout.instance_spinner_item, items);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinner.setAdapter(adapter);
+        spinner.setSelection(defaultSelect, false);
+        spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(final AdapterView<?> parent, final View view,
+                                       final int position, final long id) {
+                final PeertubeInstance newInstance = instances.get(position);
+                if (newInstance.getUrl().equals(PeertubeHelper.getCurrentInstance().getUrl())) {
+                    return;
+                }
+                PeertubeHelper.selectInstance(newInstance, getApplicationContext());
+                changeService(menuItem);
+                mainBinding.getRoot().closeDrawers();
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                    getSupportFragmentManager().popBackStack(null,
+                            FragmentManager.POP_BACK_STACK_INCLUSIVE);
+                    ActivityCompat.recreate(MainActivity.this);
+                }, 300);
+            }
 
-        drawerItems.getMenu()
-                .add(R.id.menu_tabs_group, ITEM_ID_SUBSCRIPTIONS, ORDER, R.string.tab_subscriptions)
-                .setIcon(ThemeHelper.resolveResourceIdFromAttr(this, R.attr.ic_channel));
-        drawerItems.getMenu()
-                .add(R.id.menu_tabs_group, ITEM_ID_FEED, ORDER, R.string.fragment_whats_new)
-                .setIcon(ThemeHelper.resolveResourceIdFromAttr(this, R.attr.rss));
-        drawerItems.getMenu()
-                .add(R.id.menu_tabs_group, ITEM_ID_BOOKMARKS, ORDER, R.string.tab_bookmarks)
-                .setIcon(ThemeHelper.resolveResourceIdFromAttr(this, R.attr.ic_bookmark));
-        drawerItems.getMenu()
-                .add(R.id.menu_tabs_group, ITEM_ID_DOWNLOADS, ORDER, R.string.downloads)
-                .setIcon(ThemeHelper.resolveResourceIdFromAttr(this, R.attr.download));
-        drawerItems.getMenu()
-                .add(R.id.menu_tabs_group, ITEM_ID_HISTORY, ORDER, R.string.action_history)
-                .setIcon(ThemeHelper.resolveResourceIdFromAttr(this, R.attr.history));
+            @Override
+            public void onNothingSelected(final AdapterView<?> parent) {
 
-        //Settings and About
-        drawerItems.getMenu()
-                .add(R.id.menu_options_about_group, ITEM_ID_SETTINGS, ORDER, R.string.settings)
-                .setIcon(ThemeHelper.resolveResourceIdFromAttr(this, R.attr.settings));
-        drawerItems.getMenu()
-                .add(R.id.menu_options_about_group, ITEM_ID_ABOUT, ORDER, R.string.tab_about)
-                .setIcon(ThemeHelper.resolveResourceIdFromAttr(this, R.attr.info));
+            }
+        });
+        menuItem.setActionView(spinner);
     }
 
     @Override
@@ -351,47 +501,71 @@ public class MainActivity extends AppCompatActivity {
         if (!isChangingConfigurations()) {
             StateSaver.clearStateFiles();
         }
+        if (broadcastReceiver != null) {
+            unregisterReceiver(broadcastReceiver);
+        }
     }
 
     @Override
     protected void onResume() {
+        // Change the date format to match the selected language on resume
+        Localization.initPrettyTime(Localization.resolvePrettyTime());
         super.onResume();
 
-        // close drawer on return, and don't show animation, so its looks like the drawer isn't open
-        // when the user returns to MainActivity
-        drawer.closeDrawer(Gravity.START, false);
+        // Close drawer on return, and don't show animation,
+        // so it looks like the drawer isn't open when the user returns to MainActivity
+        mainBinding.getRoot().closeDrawer(GravityCompat.START, false);
         try {
-            String selectedServiceName = NewPipe.getService(
-                    ServiceHelper.getSelectedServiceId(this)).getServiceInfo().getName();
-            headerServiceView.setText(selectedServiceName);
-        } catch (Exception e) {
-            ErrorActivity.reportUiError(this, e);
+            final int selectedServiceId = ServiceHelper.getSelectedServiceId(this);
+            final String selectedServiceName = NewPipe.getService(selectedServiceId)
+                    .getServiceInfo().getName();
+            drawerHeaderBinding.drawerHeaderServiceView.setText(selectedServiceName);
+            drawerHeaderBinding.drawerHeaderServiceIcon.setImageResource(ServiceHelper
+                    .getIcon(selectedServiceId));
+
+            drawerHeaderBinding.drawerHeaderServiceView.post(() -> drawerHeaderBinding
+                    .drawerHeaderServiceView.setSelected(true));
+            drawerHeaderBinding.drawerHeaderActionButton.setContentDescription(
+                    getString(R.string.drawer_header_description) + selectedServiceName);
+        } catch (final Exception e) {
+            ErrorUtil.showUiErrorSnackbar(this, "Setting up service toggle", e);
         }
 
-        SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this);
         if (sharedPreferences.getBoolean(Constants.KEY_THEME_CHANGE, false)) {
-            if (DEBUG) Log.d(TAG, "Theme has changed, recreating activity...");
-            sharedPreferences.edit().putBoolean(Constants.KEY_THEME_CHANGE, false).apply();
-            // https://stackoverflow.com/questions/10844112/runtimeexception-performing-pause-of-activity-that-is-not-resumed
-            // Briefly, let the activity resume properly posting the recreate call to end of the message queue
-            new Handler(Looper.getMainLooper()).post(MainActivity.this::recreate);
+            if (DEBUG) {
+                Log.d(TAG, "Theme has changed, recreating activity...");
+            }
+            sharedPrefEditor.putBoolean(Constants.KEY_THEME_CHANGE, false).apply();
+            ActivityCompat.recreate(this);
         }
 
         if (sharedPreferences.getBoolean(Constants.KEY_MAIN_PAGE_CHANGE, false)) {
-            if (DEBUG) Log.d(TAG, "main page has changed, recreating main fragment...");
-            sharedPreferences.edit().putBoolean(Constants.KEY_MAIN_PAGE_CHANGE, false).apply();
+            if (DEBUG) {
+                Log.d(TAG, "main page has changed, recreating main fragment...");
+            }
+            sharedPrefEditor.putBoolean(Constants.KEY_MAIN_PAGE_CHANGE, false).apply();
             NavigationHelper.openMainActivity(this);
         }
+
+        final boolean isHistoryEnabled = sharedPreferences.getBoolean(
+                getString(R.string.enable_watch_history_key), true);
+        drawerLayoutBinding.navigation.getMenu().findItem(ITEM_ID_HISTORY)
+                .setVisible(isHistoryEnabled);
     }
 
     @Override
-    protected void onNewIntent(Intent intent) {
-        if (DEBUG) Log.d(TAG, "onNewIntent() called with: intent = [" + intent + "]");
+    protected void onNewIntent(final Intent intent) {
+        if (DEBUG) {
+            Log.d(TAG, "onNewIntent() called with: intent = [" + intent + "]");
+        }
         if (intent != null) {
             // Return if launched from a launcher (e.g. Nova Launcher, Pixel Launcher ...)
             // to not destroy the already created backstack
-            String action = intent.getAction();
-            if ((action != null && action.equals(Intent.ACTION_MAIN)) && intent.hasCategory(Intent.CATEGORY_LAUNCHER)) return;
+            final String action = intent.getAction();
+            if ((action != null && action.equals(Intent.ACTION_MAIN))
+                    && intent.hasCategory(Intent.CATEGORY_LAUNCHER)) {
+                return;
+            }
         }
 
         super.onNewIntent(intent);
@@ -400,25 +574,81 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
-    public void onBackPressed() {
-        if (DEBUG) Log.d(TAG, "onBackPressed() called");
-
-        Fragment fragment = getSupportFragmentManager().findFragmentById(R.id.fragment_holder);
-        // If current fragment implements BackPressable (i.e. can/wanna handle back press) delegate the back press to it
-        if (fragment instanceof BackPressable) {
-            if (((BackPressable) fragment).onBackPressed()) return;
+    public boolean onKeyDown(final int keyCode, final KeyEvent event) {
+        final Fragment fragment = getSupportFragmentManager()
+                .findFragmentById(R.id.fragment_player_holder);
+        if (fragment instanceof OnKeyDownListener
+                && !bottomSheetHiddenOrCollapsed()) {
+            // Provide keyDown event to fragment which then sends this event
+            // to the main player service
+            return ((OnKeyDownListener) fragment).onKeyDown(keyCode)
+                    || super.onKeyDown(keyCode, event);
         }
-
-
-        if (getSupportFragmentManager().getBackStackEntryCount() == 1) {
-            finish();
-        } else super.onBackPressed();
+        return super.onKeyDown(keyCode, event);
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-        for (int i: grantResults){
-            if (i == PackageManager.PERMISSION_DENIED){
+    public void onBackPressed() {
+        if (DEBUG) {
+            Log.d(TAG, "onBackPressed() called");
+        }
+
+        if (DeviceUtils.isTv(this)) {
+            if (mainBinding.getRoot().isDrawerOpen(drawerLayoutBinding.navigation)) {
+                mainBinding.getRoot().closeDrawers();
+                return;
+            }
+        }
+
+        // In case bottomSheet is not visible on the screen or collapsed we can assume that the user
+        // interacts with a fragment inside fragment_holder so all back presses should be
+        // handled by it
+        if (bottomSheetHiddenOrCollapsed()) {
+            final FragmentManager fm = getSupportFragmentManager();
+            final Fragment fragment = fm.findFragmentById(R.id.fragment_holder);
+            // If current fragment implements BackPressable (i.e. can/wanna handle back press)
+            // delegate the back press to it
+            if (fragment instanceof BackPressable) {
+                if (((BackPressable) fragment).onBackPressed()) {
+                    return;
+                }
+            } else if (fragment instanceof CommentRepliesFragment) {
+                // expand DetailsFragment if CommentRepliesFragment was opened
+                // to show the top level comments again
+                // Expand DetailsFragment if CommentRepliesFragment was opened
+                // and no other CommentRepliesFragments are on top of the back stack
+                // to show the top level comments again.
+                openDetailFragmentFromCommentReplies(fm, false);
+            }
+
+        } else {
+            final Fragment fragmentPlayer = getSupportFragmentManager()
+                    .findFragmentById(R.id.fragment_player_holder);
+            // If current fragment implements BackPressable (i.e. can/wanna handle back press)
+            // delegate the back press to it
+            if (fragmentPlayer instanceof BackPressable) {
+                if (!((BackPressable) fragmentPlayer).onBackPressed()) {
+                    BottomSheetBehavior.from(mainBinding.fragmentPlayerHolder)
+                            .setState(BottomSheetBehavior.STATE_COLLAPSED);
+                }
+                return;
+            }
+        }
+
+        if (getSupportFragmentManager().getBackStackEntryCount() == 1) {
+            finish();
+        } else {
+            super.onBackPressed();
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(final int requestCode,
+                                           @NonNull final String[] permissions,
+                                           @NonNull final int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        for (final int i : grantResults) {
+            if (i == PackageManager.PERMISSION_DENIED) {
                 return;
             }
         }
@@ -427,10 +657,14 @@ public class MainActivity extends AppCompatActivity {
                 NavigationHelper.openDownloads(this);
                 break;
             case PermissionHelper.DOWNLOAD_DIALOG_REQUEST_CODE:
-                Fragment fragment = getSupportFragmentManager().findFragmentById(R.id.fragment_holder);
+                final Fragment fragment = getSupportFragmentManager()
+                        .findFragmentById(R.id.fragment_player_holder);
                 if (fragment instanceof VideoDetailFragment) {
                     ((VideoDetailFragment) fragment).openDownloadDialog();
                 }
+                break;
+            case PermissionHelper.POST_NOTIFICATIONS_REQUEST_CODE:
+                NotificationWorker.initialize(this);
                 break;
         }
     }
@@ -460,10 +694,17 @@ public class MainActivity extends AppCompatActivity {
      * </pre>
      */
     private void onHomeButtonPressed() {
-        // If search fragment wasn't found in the backstack...
-        if (!NavigationHelper.tryGotoSearchFragment(getSupportFragmentManager())) {
-            // ...go to the main fragment
-            NavigationHelper.gotoMainFragment(getSupportFragmentManager());
+        final FragmentManager fm = getSupportFragmentManager();
+        final Fragment fragment = fm.findFragmentById(R.id.fragment_holder);
+
+        if (fragment instanceof CommentRepliesFragment) {
+            // Expand DetailsFragment if CommentRepliesFragment was opened
+            // and no other CommentRepliesFragments are on top of the back stack
+            // to show the top level comments again.
+            openDetailFragmentFromCommentReplies(fm, true);
+        } else if (!NavigationHelper.tryGotoSearchFragment(fm)) {
+            // If search fragment wasn't found in the backstack go to the main fragment
+            NavigationHelper.gotoMainFragment(fm);
         }
     }
 
@@ -472,23 +713,19 @@ public class MainActivity extends AppCompatActivity {
     //////////////////////////////////////////////////////////////////////////*/
 
     @Override
-    public boolean onCreateOptionsMenu(Menu menu) {
-        if (DEBUG) Log.d(TAG, "onCreateOptionsMenu() called with: menu = [" + menu + "]");
+    public boolean onCreateOptionsMenu(final Menu menu) {
+        if (DEBUG) {
+            Log.d(TAG, "onCreateOptionsMenu() called with: menu = [" + menu + "]");
+        }
         super.onCreateOptionsMenu(menu);
 
-        Fragment fragment = getSupportFragmentManager().findFragmentById(R.id.fragment_holder);
-        if (!(fragment instanceof VideoDetailFragment)) {
-            findViewById(R.id.toolbar).findViewById(R.id.toolbar_spinner).setVisibility(View.GONE);
-        }
-
+        final Fragment fragment =
+                getSupportFragmentManager().findFragmentById(R.id.fragment_holder);
         if (!(fragment instanceof SearchFragment)) {
-            findViewById(R.id.toolbar).findViewById(R.id.toolbar_search_container).setVisibility(View.GONE);
-
-            MenuInflater inflater = getMenuInflater();
-            inflater.inflate(R.menu.main_menu, menu);
+            toolbarLayoutBinding.toolbarSearchContainer.getRoot().setVisibility(View.GONE);
         }
 
-        ActionBar actionBar = getSupportActionBar();
+        final ActionBar actionBar = getSupportActionBar();
         if (actionBar != null) {
             actionBar.setDisplayHomeAsUpEnabled(false);
         }
@@ -499,25 +736,16 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
-    public boolean onOptionsItemSelected(MenuItem item) {
-        if (DEBUG) Log.d(TAG, "onOptionsItemSelected() called with: item = [" + item + "]");
-        int id = item.getItemId();
-
-        switch (id) {
-            case android.R.id.home:
-                onHomeButtonPressed();
-                return true;
-            case R.id.action_show_downloads:
-                    return NavigationHelper.openDownloads(this);
-            case R.id.action_history:
-                    NavigationHelper.openStatisticFragment(getSupportFragmentManager());
-                    return true;
-            case R.id.action_settings:
-                    NavigationHelper.openSettings(this);
-                    return true;
-            default:
-                return super.onOptionsItemSelected(item);
+    public boolean onOptionsItemSelected(@NonNull final MenuItem item) {
+        if (DEBUG) {
+            Log.d(TAG, "onOptionsItemSelected() called with: item = [" + item + "]");
         }
+
+        if (item.getItemId() == android.R.id.home) {
+            onHomeButtonPressed();
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
     }
 
     /*//////////////////////////////////////////////////////////////////////////
@@ -525,11 +753,22 @@ public class MainActivity extends AppCompatActivity {
     //////////////////////////////////////////////////////////////////////////*/
 
     private void initFragments() {
-        if (DEBUG) Log.d(TAG, "initFragments() called");
+        if (DEBUG) {
+            Log.d(TAG, "initFragments() called");
+        }
         StateSaver.clearStateFiles();
         if (getIntent() != null && getIntent().hasExtra(Constants.KEY_LINK_TYPE)) {
+            // When user watch a video inside popup and then tries to open the video in main player
+            // while the app is closed he will see a blank fragment on place of kiosk.
+            // Let's open it first
+            if (getSupportFragmentManager().getBackStackEntryCount() == 0) {
+                NavigationHelper.openMainFragment(getSupportFragmentManager());
+            }
+
             handleIntent(getIntent());
-        } else NavigationHelper.gotoMainFragment(getSupportFragmentManager());
+        } else {
+            NavigationHelper.gotoMainFragment(getSupportFragmentManager());
+        }
     }
 
     /*//////////////////////////////////////////////////////////////////////////
@@ -537,56 +776,74 @@ public class MainActivity extends AppCompatActivity {
     //////////////////////////////////////////////////////////////////////////*/
 
     private void updateDrawerNavigation() {
-        if (getSupportActionBar() == null) return;
+        if (getSupportActionBar() == null) {
+            return;
+        }
 
-        final Toolbar toolbar = findViewById(R.id.toolbar);
-        final DrawerLayout drawer = findViewById(R.id.drawer_layout);
-
-        final Fragment fragment = getSupportFragmentManager().findFragmentById(R.id.fragment_holder);
+        final Fragment fragment = getSupportFragmentManager()
+                .findFragmentById(R.id.fragment_holder);
         if (fragment instanceof MainFragment) {
             getSupportActionBar().setDisplayHomeAsUpEnabled(false);
             if (toggle != null) {
                 toggle.syncState();
-                toolbar.setNavigationOnClickListener(v -> drawer.openDrawer(GravityCompat.START));
-                drawer.setDrawerLockMode(DrawerLayout.LOCK_MODE_UNDEFINED);
+                toolbarLayoutBinding.toolbar.setNavigationOnClickListener(v -> mainBinding.getRoot()
+                        .open());
+                mainBinding.getRoot().setDrawerLockMode(DrawerLayout.LOCK_MODE_UNDEFINED);
             }
         } else {
-            drawer.setDrawerLockMode(DrawerLayout.LOCK_MODE_LOCKED_CLOSED);
+            mainBinding.getRoot().setDrawerLockMode(DrawerLayout.LOCK_MODE_LOCKED_CLOSED);
             getSupportActionBar().setDisplayHomeAsUpEnabled(true);
-            toolbar.setNavigationOnClickListener(v -> onHomeButtonPressed());
+            toolbarLayoutBinding.toolbar.setNavigationOnClickListener(v -> onHomeButtonPressed());
         }
     }
 
-    private void handleIntent(Intent intent) {
+    private void handleIntent(final Intent intent) {
         try {
-            if (DEBUG) Log.d(TAG, "handleIntent() called with: intent = [" + intent + "]");
+            if (DEBUG) {
+                Log.d(TAG, "handleIntent() called with: intent = [" + intent + "]");
+            }
 
             if (intent.hasExtra(Constants.KEY_LINK_TYPE)) {
-                String url = intent.getStringExtra(Constants.KEY_URL);
-                int serviceId = intent.getIntExtra(Constants.KEY_SERVICE_ID, 0);
+                final String url = intent.getStringExtra(Constants.KEY_URL);
+                final int serviceId = intent.getIntExtra(Constants.KEY_SERVICE_ID, 0);
                 String title = intent.getStringExtra(Constants.KEY_TITLE);
-                switch (((StreamingService.LinkType) intent.getSerializableExtra(Constants.KEY_LINK_TYPE))) {
+                if (title == null) {
+                    title = "";
+                }
+
+                final StreamingService.LinkType linkType = ((StreamingService.LinkType) intent
+                        .getSerializableExtra(Constants.KEY_LINK_TYPE));
+                assert linkType != null;
+                switch (linkType) {
                     case STREAM:
-                        boolean autoPlay = intent.getBooleanExtra(VideoDetailFragment.AUTO_PLAY, false);
-                        NavigationHelper.openVideoDetailFragment(getSupportFragmentManager(), serviceId, url, title, autoPlay);
+                        final String intentCacheKey = intent.getStringExtra(
+                                Player.PLAY_QUEUE_KEY);
+                        final PlayQueue playQueue = intentCacheKey != null
+                                ? SerializedCache.getInstance()
+                                .take(intentCacheKey, PlayQueue.class)
+                                : null;
+
+                        final boolean switchingPlayers = intent.getBooleanExtra(
+                                VideoDetailFragment.KEY_SWITCHING_PLAYERS, false);
+                        NavigationHelper.openVideoDetailFragment(
+                                getApplicationContext(), getSupportFragmentManager(),
+                                serviceId, url, title, playQueue, switchingPlayers);
                         break;
                     case CHANNEL:
                         NavigationHelper.openChannelFragment(getSupportFragmentManager(),
-                                serviceId,
-                                url,
-                                title);
+                                serviceId, url, title);
                         break;
                     case PLAYLIST:
                         NavigationHelper.openPlaylistFragment(getSupportFragmentManager(),
-                                serviceId,
-                                url,
-                                title);
+                                serviceId, url, title);
                         break;
                 }
             } else if (intent.hasExtra(Constants.KEY_OPEN_SEARCH)) {
                 String searchString = intent.getStringExtra(Constants.KEY_SEARCH_STRING);
-                if (searchString == null) searchString = "";
-                int serviceId = intent.getIntExtra(Constants.KEY_SERVICE_ID, 0);
+                if (searchString == null) {
+                    searchString = "";
+                }
+                final int serviceId = intent.getIntExtra(Constants.KEY_SERVICE_ID, 0);
                 NavigationHelper.openSearchFragment(
                         getSupportFragmentManager(),
                         serviceId,
@@ -595,8 +852,129 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 NavigationHelper.gotoMainFragment(getSupportFragmentManager());
             }
-        } catch (Exception e) {
-            ErrorActivity.reportUiError(this, e);
+        } catch (final Exception e) {
+            ErrorUtil.showUiErrorSnackbar(this, "Handling intent", e);
         }
     }
+
+    private void openMiniPlayerIfMissing() {
+        final Fragment fragmentPlayer = getSupportFragmentManager()
+                .findFragmentById(R.id.fragment_player_holder);
+        if (fragmentPlayer == null) {
+            // We still don't have a fragment attached to the activity. It can happen when a user
+            // started popup or background players without opening a stream inside the fragment.
+            // Adding it in a collapsed state (only mini player will be visible).
+            NavigationHelper.showMiniPlayer(getSupportFragmentManager());
+        }
+    }
+
+    private void openMiniPlayerUponPlayerStarted() {
+        if (getIntent().getSerializableExtra(Constants.KEY_LINK_TYPE)
+                == StreamingService.LinkType.STREAM) {
+            // handleIntent() already takes care of opening video detail fragment
+            // due to an intent containing a STREAM link
+            return;
+        }
+
+        if (PlayerHolder.getInstance().isPlayerOpen()) {
+            // if the player is already open, no need for a broadcast receiver
+            openMiniPlayerIfMissing();
+        } else {
+            // listen for player start intent being sent around
+            broadcastReceiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(final Context context, final Intent intent) {
+                    if (Objects.equals(intent.getAction(),
+                            VideoDetailFragment.ACTION_PLAYER_STARTED)
+                            && PlayerHolder.getInstance().isPlayerOpen()) {
+                        openMiniPlayerIfMissing();
+                        // At this point the player is added 100%, we can unregister. Other actions
+                        // are useless since the fragment will not be removed after that.
+                        unregisterReceiver(broadcastReceiver);
+                        broadcastReceiver = null;
+                    }
+                }
+            };
+            final IntentFilter intentFilter = new IntentFilter();
+            intentFilter.addAction(VideoDetailFragment.ACTION_PLAYER_STARTED);
+            ContextCompat.registerReceiver(this, broadcastReceiver, intentFilter,
+                    ContextCompat.RECEIVER_EXPORTED);
+
+            // If the PlayerHolder is not bound yet, but the service is running, try to bind to it.
+            // Once the connection is established, the ACTION_PLAYER_STARTED will be sent.
+            PlayerHolder.getInstance().tryBindIfNeeded(this);
+        }
+    }
+
+    private void openDetailFragmentFromCommentReplies(
+            @NonNull final FragmentManager fm,
+            final boolean popBackStack
+    ) {
+        // obtain the name of the fragment under the replies fragment that's going to be popped
+        @Nullable final String fragmentUnderEntryName;
+        if (fm.getBackStackEntryCount() < 2) {
+            fragmentUnderEntryName = null;
+        } else {
+            fragmentUnderEntryName = fm.getBackStackEntryAt(fm.getBackStackEntryCount() - 2)
+                    .getName();
+        }
+
+        // the root comment is the comment for which the user opened the replies page
+        @Nullable final CommentRepliesFragment repliesFragment =
+                (CommentRepliesFragment) fm.findFragmentByTag(CommentRepliesFragment.TAG);
+        @Nullable final CommentsInfoItem rootComment =
+                repliesFragment == null ? null : repliesFragment.getCommentsInfoItem();
+
+        // sometimes this function pops the backstack, other times it's handled by the system
+        if (popBackStack) {
+            fm.popBackStackImmediate();
+        }
+
+        // only expand the bottom sheet back if there are no more nested comment replies fragments
+        // stacked under the one that is currently being popped
+        if (CommentRepliesFragment.TAG.equals(fragmentUnderEntryName)) {
+            return;
+        }
+
+        final BottomSheetBehavior<FragmentContainerView> behavior = BottomSheetBehavior
+                .from(mainBinding.fragmentPlayerHolder);
+        // do not return to the comment if the details fragment was closed
+        if (behavior.getState() == BottomSheetBehavior.STATE_HIDDEN) {
+            return;
+        }
+
+        // scroll to the root comment once the bottom sheet expansion animation is finished
+        behavior.addBottomSheetCallback(new BottomSheetBehavior.BottomSheetCallback() {
+            @Override
+            public void onStateChanged(@NonNull final View bottomSheet,
+                                       final int newState) {
+                if (newState == BottomSheetBehavior.STATE_EXPANDED) {
+                    final Fragment detailFragment = fm.findFragmentById(
+                            R.id.fragment_player_holder);
+                    if (detailFragment instanceof VideoDetailFragment && rootComment != null) {
+                        // should always be the case
+                        ((VideoDetailFragment) detailFragment).scrollToComment(rootComment);
+                    }
+                    behavior.removeBottomSheetCallback(this);
+                }
+            }
+
+            @Override
+            public void onSlide(@NonNull final View bottomSheet, final float slideOffset) {
+                // not needed, listener is removed once the sheet is expanded
+            }
+        });
+
+        behavior.setState(BottomSheetBehavior.STATE_EXPANDED);
+    }
+
+    private boolean bottomSheetHiddenOrCollapsed() {
+        final BottomSheetBehavior<FrameLayout> bottomSheetBehavior =
+                BottomSheetBehavior.from(mainBinding.fragmentPlayerHolder);
+
+        final int sheetState = bottomSheetBehavior.getState();
+        return sheetState == BottomSheetBehavior.STATE_HIDDEN
+                || sheetState == BottomSheetBehavior.STATE_COLLAPSED;
+    }
+
 }

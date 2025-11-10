@@ -1,47 +1,51 @@
 package org.schabi.newpipe.fragments.list;
 
-import android.app.Activity;
+import static org.schabi.newpipe.ktx.ViewUtils.animate;
+import static org.schabi.newpipe.ktx.ViewUtils.animateHideRecyclerViewAllowingScrolling;
+
 import android.content.Context;
-import android.content.DialogInterface;
 import android.content.SharedPreferences;
-import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.os.Bundle;
-import android.preference.PreferenceManager;
-import android.support.annotation.NonNull;
-import android.support.v7.app.ActionBar;
-import android.support.v7.app.AppCompatActivity;
-import android.support.v7.widget.GridLayoutManager;
-import android.support.v7.widget.LinearLayoutManager;
-import android.support.v7.widget.RecyclerView;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.View;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.appcompat.app.ActionBar;
+import androidx.preference.PreferenceManager;
+import androidx.recyclerview.widget.GridLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+
 import org.schabi.newpipe.R;
+import org.schabi.newpipe.error.ErrorUtil;
 import org.schabi.newpipe.extractor.InfoItem;
-import org.schabi.newpipe.extractor.channel.ChannelInfoItem;
-import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem;
 import org.schabi.newpipe.extractor.stream.StreamInfoItem;
 import org.schabi.newpipe.fragments.BaseStateFragment;
 import org.schabi.newpipe.fragments.OnScrollBelowItemsListener;
-import org.schabi.newpipe.info_list.InfoItemDialog;
 import org.schabi.newpipe.info_list.InfoListAdapter;
-import org.schabi.newpipe.local.dialog.PlaylistAppendDialog;
-import org.schabi.newpipe.player.playqueue.SinglePlayQueue;
-import org.schabi.newpipe.report.ErrorActivity;
+import org.schabi.newpipe.info_list.ItemViewMode;
+import org.schabi.newpipe.info_list.dialog.InfoItemDialog;
 import org.schabi.newpipe.util.NavigationHelper;
 import org.schabi.newpipe.util.OnClickGesture;
 import org.schabi.newpipe.util.StateSaver;
+import org.schabi.newpipe.util.ThemeHelper;
+import org.schabi.newpipe.views.SuperScrollLayoutManager;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.Queue;
+import java.util.function.Supplier;
 
-import static org.schabi.newpipe.util.AnimationUtils.animateView;
+public abstract class BaseListFragment<I, N> extends BaseStateFragment<I>
+        implements ListViewContract<I, N>, StateSaver.WriteRead,
+        SharedPreferences.OnSharedPreferenceChangeListener {
+    private static final int LIST_MODE_UPDATE_FLAG = 0x32;
+    protected org.schabi.newpipe.util.SavedState savedState;
 
-public abstract class BaseListFragment<I, N> extends BaseStateFragment<I> implements ListViewContract<I, N>, StateSaver.WriteRead, SharedPreferences.OnSharedPreferenceChangeListener {
+    private boolean useDefaultStateSaving = true;
+    private int updateFlags = 0;
 
     /*//////////////////////////////////////////////////////////////////////////
     // Views
@@ -49,22 +53,23 @@ public abstract class BaseListFragment<I, N> extends BaseStateFragment<I> implem
 
     protected InfoListAdapter infoListAdapter;
     protected RecyclerView itemsList;
-    private int updateFlags = 0;
-
-    private static final int LIST_MODE_UPDATE_FLAG = 0x32;
+    private int focusedPosition = -1;
 
     /*//////////////////////////////////////////////////////////////////////////
     // LifeCycle
     //////////////////////////////////////////////////////////////////////////*/
 
     @Override
-    public void onAttach(Context context) {
+    public void onAttach(@NonNull final Context context) {
         super.onAttach(context);
-        infoListAdapter = new InfoListAdapter(activity);
+
+        if (infoListAdapter == null) {
+            infoListAdapter = new InfoListAdapter(activity);
+        }
     }
 
     @Override
-    public void onCreate(Bundle savedInstanceState) {
+    public void onCreate(final Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setHasOptionsMenu(true);
         PreferenceManager.getDefaultSharedPreferences(activity)
@@ -74,7 +79,9 @@ public abstract class BaseListFragment<I, N> extends BaseStateFragment<I> implem
     @Override
     public void onDestroy() {
         super.onDestroy();
-        StateSaver.onDestroy(savedState);
+        if (useDefaultStateSaving) {
+            StateSaver.onDestroy(savedState);
+        }
         PreferenceManager.getDefaultSharedPreferences(activity)
                 .unregisterOnSharedPreferenceChangeListener(this);
     }
@@ -85,10 +92,7 @@ public abstract class BaseListFragment<I, N> extends BaseStateFragment<I> implem
 
         if (updateFlags != 0) {
             if ((updateFlags & LIST_MODE_UPDATE_FLAG) != 0) {
-                final boolean useGrid = isGridLayout();
-                itemsList.setLayoutManager(useGrid ? getGridLayoutManager() : getListLayoutManager());
-                infoListAdapter.setGridItemVariants(useGrid);
-                infoListAdapter.notifyDataSetChanged();
+                refreshItemViewMode();
             }
             updateFlags = 0;
         }
@@ -98,7 +102,15 @@ public abstract class BaseListFragment<I, N> extends BaseStateFragment<I> implem
     // State Saving
     //////////////////////////////////////////////////////////////////////////*/
 
-    protected StateSaver.SavedState savedState;
+    /**
+     * If the default implementation of {@link StateSaver.WriteRead} should be used.
+     *
+     * @param useDefaultStateSaving Whether the default implementation should be used
+     * @see StateSaver
+     */
+    public void setUseDefaultStateSaving(final boolean useDefaultStateSaving) {
+        this.useDefaultStateSaving = useDefaultStateSaving;
+    }
 
     @Override
     public String generateSuffix() {
@@ -106,133 +118,266 @@ public abstract class BaseListFragment<I, N> extends BaseStateFragment<I> implem
         return "." + infoListAdapter.getItemsList().size() + ".list";
     }
 
+    private int getFocusedPosition() {
+        try {
+            final View focusedItem = itemsList.getFocusedChild();
+            final RecyclerView.ViewHolder itemHolder =
+                    itemsList.findContainingViewHolder(focusedItem);
+            return itemHolder.getBindingAdapterPosition();
+        } catch (final NullPointerException e) {
+            return -1;
+        }
+    }
+
     @Override
-    public void writeTo(Queue<Object> objectsToSave) {
+    public void writeTo(final Queue<Object> objectsToSave) {
+        if (!useDefaultStateSaving) {
+            return;
+        }
+
         objectsToSave.add(infoListAdapter.getItemsList());
+        objectsToSave.add(getFocusedPosition());
     }
 
     @Override
     @SuppressWarnings("unchecked")
-    public void readFrom(@NonNull Queue<Object> savedObjects) throws Exception {
+    public void readFrom(@NonNull final Queue<Object> savedObjects) throws Exception {
+        if (!useDefaultStateSaving) {
+            return;
+        }
+
         infoListAdapter.getItemsList().clear();
         infoListAdapter.getItemsList().addAll((List<InfoItem>) savedObjects.poll());
+        restoreFocus((Integer) savedObjects.poll());
+    }
+
+    private void restoreFocus(final Integer position) {
+        if (position == null || position < 0) {
+            return;
+        }
+
+        itemsList.post(() -> {
+            final RecyclerView.ViewHolder focusedHolder =
+                    itemsList.findViewHolderForAdapterPosition(position);
+
+            if (focusedHolder != null) {
+                focusedHolder.itemView.requestFocus();
+            }
+        });
     }
 
     @Override
-    public void onSaveInstanceState(Bundle bundle) {
+    public void onSaveInstanceState(@NonNull final Bundle bundle) {
         super.onSaveInstanceState(bundle);
-        savedState = StateSaver.tryToSave(activity.isChangingConfigurations(), savedState, bundle, this);
+        if (useDefaultStateSaving) {
+            savedState = StateSaver
+                    .tryToSave(activity.isChangingConfigurations(), savedState, bundle, this);
+        }
     }
 
     @Override
-    protected void onRestoreInstanceState(@NonNull Bundle bundle) {
+    protected void onRestoreInstanceState(@NonNull final Bundle bundle) {
         super.onRestoreInstanceState(bundle);
-        savedState = StateSaver.tryToRestore(bundle, this);
+        if (useDefaultStateSaving) {
+            savedState = StateSaver.tryToRestore(bundle, this);
+        }
+    }
+
+    @Override
+    public void onStop() {
+        focusedPosition = getFocusedPosition();
+        super.onStop();
+    }
+
+    @Override
+    public void onStart() {
+        super.onStart();
+        restoreFocus(focusedPosition);
     }
 
     /*//////////////////////////////////////////////////////////////////////////
     // Init
     //////////////////////////////////////////////////////////////////////////*/
 
-    protected View getListHeader() {
+    @Nullable
+    protected Supplier<View> getListHeaderSupplier() {
         return null;
     }
 
-    protected View getListFooter() {
-        return activity.getLayoutInflater().inflate(R.layout.pignate_footer, itemsList, false);
-    }
-
     protected RecyclerView.LayoutManager getListLayoutManager() {
-        return new LinearLayoutManager(activity);
+        return new SuperScrollLayoutManager(activity);
     }
 
     protected RecyclerView.LayoutManager getGridLayoutManager() {
         final Resources resources = activity.getResources();
         int width = resources.getDimensionPixelSize(R.dimen.video_item_grid_thumbnail_image_width);
         width += (24 * resources.getDisplayMetrics().density);
-        final int spanCount = (int) Math.floor(resources.getDisplayMetrics().widthPixels / (double)width);
+        final int spanCount = Math.floorDiv(resources.getDisplayMetrics().widthPixels, width);
         final GridLayoutManager lm = new GridLayoutManager(activity, spanCount);
         lm.setSpanSizeLookup(infoListAdapter.getSpanSizeLookup(spanCount));
         return lm;
     }
 
+    /**
+     * Updates the item view mode based on user preference.
+     */
+    private void refreshItemViewMode() {
+        final ItemViewMode itemViewMode = getItemViewMode();
+        itemsList.setLayoutManager((itemViewMode == ItemViewMode.GRID)
+                ? getGridLayoutManager() : getListLayoutManager());
+        infoListAdapter.setItemViewMode(itemViewMode);
+        infoListAdapter.notifyDataSetChanged();
+    }
+
     @Override
-    protected void initViews(View rootView, Bundle savedInstanceState) {
+    protected void initViews(final View rootView, final Bundle savedInstanceState) {
         super.initViews(rootView, savedInstanceState);
 
-        final boolean useGrid = isGridLayout();
         itemsList = rootView.findViewById(R.id.items_list);
-        itemsList.setLayoutManager(useGrid ? getGridLayoutManager() : getListLayoutManager());
+        refreshItemViewMode();
 
-        infoListAdapter.setGridItemVariants(useGrid);
-        infoListAdapter.setFooter(getListFooter());
-        infoListAdapter.setHeader(getListHeader());
+        final Supplier<View> listHeaderSupplier = getListHeaderSupplier();
+        if (listHeaderSupplier != null) {
+            infoListAdapter.setHeaderSupplier(listHeaderSupplier);
+        }
 
         itemsList.setAdapter(infoListAdapter);
     }
 
-    protected void onItemSelected(InfoItem selectedItem) {
-        if (DEBUG) Log.d(TAG, "onItemSelected() called with: selectedItem = [" + selectedItem + "]");
+    protected void onItemSelected(final InfoItem selectedItem) {
+        if (DEBUG) {
+            Log.d(TAG, "onItemSelected() called with: selectedItem = [" + selectedItem + "]");
+        }
     }
 
     @Override
     protected void initListeners() {
         super.initListeners();
-        infoListAdapter.setOnStreamSelectedListener(new OnClickGesture<StreamInfoItem>() {
+        infoListAdapter.setOnStreamSelectedListener(new OnClickGesture<>() {
             @Override
-            public void selected(StreamInfoItem selectedItem) {
+            public void selected(final StreamInfoItem selectedItem) {
                 onStreamSelected(selectedItem);
             }
 
             @Override
-            public void held(StreamInfoItem selectedItem) {
-                showStreamDialog(selectedItem);
+            public void held(final StreamInfoItem selectedItem) {
+                showInfoItemDialog(selectedItem);
             }
         });
 
-        infoListAdapter.setOnChannelSelectedListener(new OnClickGesture<ChannelInfoItem>() {
-            @Override
-            public void selected(ChannelInfoItem selectedItem) {
-                try {
-                    onItemSelected(selectedItem);
-                    NavigationHelper.openChannelFragment(getFM(),
-                            selectedItem.getServiceId(),
-                            selectedItem.getUrl(),
-                            selectedItem.getName());
-                } catch (Exception e) {
-                    ErrorActivity.reportUiError((AppCompatActivity) getActivity(), e);
-                }
+        infoListAdapter.setOnChannelSelectedListener(selectedItem -> {
+            try {
+                onItemSelected(selectedItem);
+                NavigationHelper.openChannelFragment(getFM(), selectedItem.getServiceId(),
+                        selectedItem.getUrl(), selectedItem.getName());
+            } catch (final Exception e) {
+                ErrorUtil.showUiErrorSnackbar(this, "Opening channel fragment", e);
             }
         });
 
-        infoListAdapter.setOnPlaylistSelectedListener(new OnClickGesture<PlaylistInfoItem>() {
-            @Override
-            public void selected(PlaylistInfoItem selectedItem) {
-                try {
-                    onItemSelected(selectedItem);
-                    NavigationHelper.openPlaylistFragment(getFM(),
-                            selectedItem.getServiceId(),
-                            selectedItem.getUrl(),
-                            selectedItem.getName());
-                } catch (Exception e) {
-                    ErrorActivity.reportUiError((AppCompatActivity) getActivity(), e);
-                }
+        infoListAdapter.setOnPlaylistSelectedListener(selectedItem -> {
+            try {
+                onItemSelected(selectedItem);
+                NavigationHelper.openPlaylistFragment(getFM(), selectedItem.getServiceId(),
+                        selectedItem.getUrl(), selectedItem.getName());
+            } catch (final Exception e) {
+                ErrorUtil.showUiErrorSnackbar(this, "Opening playlist fragment", e);
             }
         });
 
+        infoListAdapter.setOnCommentsSelectedListener(this::onItemSelected);
+
+        // Ensure that there is always a scroll listener (e.g. when rotating the device)
+        useNormalItemListScrollListener();
+    }
+
+    /**
+     * Removes all listeners and adds the normal scroll listener to the {@link #itemsList}.
+     */
+    protected void useNormalItemListScrollListener() {
+        if (DEBUG) {
+            Log.d(TAG, "useNormalItemListScrollListener called");
+        }
         itemsList.clearOnScrollListeners();
-        itemsList.addOnScrollListener(new OnScrollBelowItemsListener() {
+        itemsList.addOnScrollListener(new DefaultItemListOnScrolledDownListener());
+    }
+
+    /**
+     * Removes all listeners and adds the initial scroll listener to the {@link #itemsList}.
+     * <br/>
+     * Which tries to load more items when not enough are in the view (not scrollable)
+     * and more are available.
+     * <br/>
+     * Note: This method only works because "This callback will also be called if visible
+     * item range changes after a layout calculation. In that case, dx and dy will be 0."
+     * - which might be unexpected because no actual scrolling occurs...
+     * <br/>
+     * This listener will be replaced by DefaultItemListOnScrolledDownListener when
+     * <ul>
+     *     <li>the view was actually scrolled</li>
+     *     <li>the view is scrollable</li>
+     *     <li>no more items can be loaded</li>
+     * </ul>
+     */
+    protected void useInitialItemListLoadScrollListener() {
+        if (DEBUG) {
+            Log.d(TAG, "useInitialItemListLoadScrollListener called");
+        }
+        itemsList.clearOnScrollListeners();
+        itemsList.addOnScrollListener(new DefaultItemListOnScrolledDownListener() {
             @Override
-            public void onScrolledDown(RecyclerView recyclerView) {
-                onScrollToBottom();
+            public void onScrolled(@NonNull final RecyclerView recyclerView,
+                                   final int dx, final int dy) {
+                super.onScrolled(recyclerView, dx, dy);
+
+                if (dy != 0) {
+                    log("Vertical scroll occurred");
+
+                    useNormalItemListScrollListener();
+                    return;
+                }
+                if (isLoading.get()) {
+                    log("Still loading data -> Skipping");
+                    return;
+                }
+                if (!hasMoreItems()) {
+                    log("No more items to load");
+
+                    useNormalItemListScrollListener();
+                    return;
+                }
+                if (itemsList.canScrollVertically(1)
+                        || itemsList.canScrollVertically(-1)) {
+                    log("View is scrollable");
+
+                    useNormalItemListScrollListener();
+                    return;
+                }
+
+                log("Loading more data");
+                loadMoreItems();
+            }
+
+            private void log(final String msg) {
+                if (DEBUG) {
+                    Log.d(TAG, "initItemListLoadScrollListener - " + msg);
+                }
             }
         });
     }
 
-    private void onStreamSelected(StreamInfoItem selectedItem) {
+    class DefaultItemListOnScrolledDownListener extends OnScrollBelowItemsListener {
+        @Override
+        public void onScrolledDown(final RecyclerView recyclerView) {
+            onScrollToBottom();
+        }
+    }
+
+    private void onStreamSelected(final StreamInfoItem selectedItem) {
         onItemSelected(selectedItem);
-        NavigationHelper.openVideoDetailFragment(getFM(),
-                selectedItem.getServiceId(), selectedItem.getUrl(), selectedItem.getName());
+        NavigationHelper.openVideoDetailFragment(requireContext(), getFM(),
+                selectedItem.getServiceId(), selectedItem.getUrl(), selectedItem.getName(),
+                null, false);
     }
 
     protected void onScrollToBottom() {
@@ -241,41 +386,12 @@ public abstract class BaseListFragment<I, N> extends BaseStateFragment<I> implem
         }
     }
 
-    protected void showStreamDialog(final StreamInfoItem item) {
-        final Context context = getContext();
-        final Activity activity = getActivity();
-        if (context == null || context.getResources() == null || getActivity() == null) return;
-
-        final String[] commands = new String[]{
-                context.getResources().getString(R.string.enqueue_on_background),
-                context.getResources().getString(R.string.enqueue_on_popup),
-                context.getResources().getString(R.string.append_playlist),
-                context.getResources().getString(R.string.share)
-        };
-
-        final DialogInterface.OnClickListener actions = (dialogInterface, i) -> {
-            switch (i) {
-                case 0:
-                    NavigationHelper.enqueueOnBackgroundPlayer(context, new SinglePlayQueue(item));
-                    break;
-                case 1:
-                    NavigationHelper.enqueueOnPopupPlayer(activity, new SinglePlayQueue(item));
-                    break;
-                case 2:
-                    if (getFragmentManager() != null) {
-                        PlaylistAppendDialog.fromStreamInfoItems(Collections.singletonList(item))
-                                .show(getFragmentManager(), TAG);
-                    }
-                    break;
-                case 3:
-                    shareUrl(item.getName(), item.getUrl());
-                    break;
-                default:
-                    break;
-            }
-        };
-
-        new InfoItemDialog(getActivity(), item, commands, actions).show();
+    protected void showInfoItemDialog(final StreamInfoItem item) {
+        try {
+            new InfoItemDialog.Builder(getActivity(), getContext(), this, item).create().show();
+        } catch (final IllegalArgumentException e) {
+            InfoItemDialog.Builder.reportErrorDuringInitialization(e, item);
+        }
     }
 
     /*//////////////////////////////////////////////////////////////////////////
@@ -283,23 +399,29 @@ public abstract class BaseListFragment<I, N> extends BaseStateFragment<I> implem
     //////////////////////////////////////////////////////////////////////////*/
 
     @Override
-    public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
-        if (DEBUG) Log.d(TAG, "onCreateOptionsMenu() called with: menu = [" + menu + "], inflater = [" + inflater + "]");
+    public void onCreateOptionsMenu(@NonNull final Menu menu,
+                                    @NonNull final MenuInflater inflater) {
+        if (DEBUG) {
+            Log.d(TAG, "onCreateOptionsMenu() called with: "
+                    + "menu = [" + menu + "], inflater = [" + inflater + "]");
+        }
         super.onCreateOptionsMenu(menu, inflater);
-        ActionBar supportActionBar = activity.getSupportActionBar();
+        final ActionBar supportActionBar = activity.getSupportActionBar();
         if (supportActionBar != null) {
             supportActionBar.setDisplayShowTitleEnabled(true);
-            if (useAsFrontPage) {
-                supportActionBar.setDisplayHomeAsUpEnabled(false);
-            } else {
-                supportActionBar.setDisplayHomeAsUpEnabled(true);
-            }
+            supportActionBar.setDisplayHomeAsUpEnabled(!useAsFrontPage);
         }
     }
 
     /*//////////////////////////////////////////////////////////////////////////
     // Load and handle
     //////////////////////////////////////////////////////////////////////////*/
+
+    @Override
+    protected void startLoading(final boolean forceLoad) {
+        useInitialItemListLoadScrollListener();
+        super.startLoading(forceLoad);
+    }
 
     protected abstract void loadMoreItems();
 
@@ -312,26 +434,20 @@ public abstract class BaseListFragment<I, N> extends BaseStateFragment<I> implem
     @Override
     public void showLoading() {
         super.showLoading();
-        // animateView(itemsList, false, 400);
+        animateHideRecyclerViewAllowingScrolling(itemsList);
     }
 
     @Override
     public void hideLoading() {
         super.hideLoading();
-        animateView(itemsList, true, 300);
-    }
-
-    @Override
-    public void showError(String message, boolean showRetryButton) {
-        super.showError(message, showRetryButton);
-        showListFooter(false);
-        animateView(itemsList, false, 200);
+        animate(itemsList, true, 300);
     }
 
     @Override
     public void showEmptyState() {
         super.showEmptyState();
         showListFooter(false);
+        animateHideRecyclerViewAllowingScrolling(itemsList);
     }
 
     @Override
@@ -344,25 +460,30 @@ public abstract class BaseListFragment<I, N> extends BaseStateFragment<I> implem
     }
 
     @Override
-    public void handleNextItems(N result) {
+    public void handleNextItems(final N result) {
         isLoading.set(false);
     }
 
     @Override
-    public void onSharedPreferenceChanged(SharedPreferences sharedPreferences, String key) {
-        if (key.equals(getString(R.string.list_view_mode_key))) {
+    public void handleError() {
+        super.handleError();
+        showListFooter(false);
+        animateHideRecyclerViewAllowingScrolling(itemsList);
+    }
+
+    @Override
+    public void onSharedPreferenceChanged(final SharedPreferences sharedPreferences,
+                                          final String key) {
+        if (getString(R.string.list_view_mode_key).equals(key)) {
             updateFlags |= LIST_MODE_UPDATE_FLAG;
         }
     }
 
-    protected boolean isGridLayout() {
-        final String list_mode = PreferenceManager.getDefaultSharedPreferences(activity).getString(getString(R.string.list_view_mode_key), getString(R.string.list_view_mode_value));
-        if ("auto".equals(list_mode)) {
-            final Configuration configuration = getResources().getConfiguration();
-            return configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-                    && configuration.isLayoutSizeAtLeast(Configuration.SCREENLAYOUT_SIZE_LARGE);
-        } else {
-            return "grid".equals(list_mode);
-        }
+    /**
+     * Returns preferred item view mode.
+     * @return ItemViewMode
+     */
+    protected ItemViewMode getItemViewMode() {
+        return ThemeHelper.getItemViewMode(requireContext());
     }
 }

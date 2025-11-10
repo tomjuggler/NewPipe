@@ -1,31 +1,43 @@
 package org.schabi.newpipe.info_list;
 
-import android.app.Activity;
-import android.support.v7.widget.GridLayoutManager;
-import android.support.v7.widget.RecyclerView;
+import android.content.Context;
 import android.util.Log;
+import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.recyclerview.widget.GridLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+
+import org.schabi.newpipe.databinding.PignateFooterBinding;
 import org.schabi.newpipe.extractor.InfoItem;
 import org.schabi.newpipe.extractor.channel.ChannelInfoItem;
+import org.schabi.newpipe.extractor.comments.CommentsInfoItem;
 import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem;
 import org.schabi.newpipe.extractor.stream.StreamInfoItem;
+import org.schabi.newpipe.info_list.holder.ChannelCardInfoItemHolder;
+import org.schabi.newpipe.info_list.holder.ChannelGridInfoItemHolder;
 import org.schabi.newpipe.info_list.holder.ChannelInfoItemHolder;
 import org.schabi.newpipe.info_list.holder.ChannelMiniInfoItemHolder;
-import org.schabi.newpipe.info_list.holder.ChannelGridInfoItemHolder;
+import org.schabi.newpipe.info_list.holder.CommentInfoItemHolder;
 import org.schabi.newpipe.info_list.holder.InfoItemHolder;
+import org.schabi.newpipe.info_list.holder.PlaylistCardInfoItemHolder;
 import org.schabi.newpipe.info_list.holder.PlaylistGridInfoItemHolder;
 import org.schabi.newpipe.info_list.holder.PlaylistInfoItemHolder;
 import org.schabi.newpipe.info_list.holder.PlaylistMiniInfoItemHolder;
+import org.schabi.newpipe.info_list.holder.StreamCardInfoItemHolder;
 import org.schabi.newpipe.info_list.holder.StreamGridInfoItemHolder;
 import org.schabi.newpipe.info_list.holder.StreamInfoItemHolder;
 import org.schabi.newpipe.info_list.holder.StreamMiniInfoItemHolder;
+import org.schabi.newpipe.local.history.HistoryRecordManager;
 import org.schabi.newpipe.util.FallbackViewHolder;
 import org.schabi.newpipe.util.OnClickGesture;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 
 /*
  * Created by Christian Schabesberger on 01.08.16.
@@ -57,98 +69,87 @@ public class InfoListAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolde
     private static final int MINI_STREAM_HOLDER_TYPE = 0x100;
     private static final int STREAM_HOLDER_TYPE = 0x101;
     private static final int GRID_STREAM_HOLDER_TYPE = 0x102;
+    private static final int CARD_STREAM_HOLDER_TYPE = 0x103;
     private static final int MINI_CHANNEL_HOLDER_TYPE = 0x200;
     private static final int CHANNEL_HOLDER_TYPE = 0x201;
     private static final int GRID_CHANNEL_HOLDER_TYPE = 0x202;
+    private static final int CARD_CHANNEL_HOLDER_TYPE = 0x203;
     private static final int MINI_PLAYLIST_HOLDER_TYPE = 0x300;
     private static final int PLAYLIST_HOLDER_TYPE = 0x301;
     private static final int GRID_PLAYLIST_HOLDER_TYPE = 0x302;
+    private static final int CARD_PLAYLIST_HOLDER_TYPE = 0x303;
+    private static final int COMMENT_HOLDER_TYPE = 0x400;
 
+    private final LayoutInflater layoutInflater;
     private final InfoItemBuilder infoItemBuilder;
-    private final ArrayList<InfoItem> infoItemList;
+    private final List<InfoItem> infoItemList;
+    private final HistoryRecordManager recordManager;
+
     private boolean useMiniVariant = false;
-    private boolean useGridVariant = false;
     private boolean showFooter = false;
-    private View header = null;
-    private View footer = null;
 
-    public class HFHolder extends RecyclerView.ViewHolder {
-        public View view;
+    private ItemViewMode itemMode = ItemViewMode.LIST;
 
-        public HFHolder(View v) {
-            super(v);
-            view = v;
-        }
-    }
+    private Supplier<View> headerSupplier = null;
 
-    public InfoListAdapter(Activity a) {
-        infoItemBuilder = new InfoItemBuilder(a);
+    public InfoListAdapter(final Context context) {
+        layoutInflater = LayoutInflater.from(context);
+        recordManager = new HistoryRecordManager(context);
+        infoItemBuilder = new InfoItemBuilder(context);
         infoItemList = new ArrayList<>();
     }
 
-    public void setOnStreamSelectedListener(OnClickGesture<StreamInfoItem> listener) {
+    public void setOnStreamSelectedListener(final OnClickGesture<StreamInfoItem> listener) {
         infoItemBuilder.setOnStreamSelectedListener(listener);
     }
 
-    public void setOnChannelSelectedListener(OnClickGesture<ChannelInfoItem> listener) {
+    public void setOnChannelSelectedListener(final OnClickGesture<ChannelInfoItem> listener) {
         infoItemBuilder.setOnChannelSelectedListener(listener);
     }
 
-    public void setOnPlaylistSelectedListener(OnClickGesture<PlaylistInfoItem> listener) {
+    public void setOnPlaylistSelectedListener(final OnClickGesture<PlaylistInfoItem> listener) {
         infoItemBuilder.setOnPlaylistSelectedListener(listener);
     }
 
-    public void useMiniItemVariants(boolean useMiniVariant) {
+    public void setOnCommentsSelectedListener(final OnClickGesture<CommentsInfoItem> listener) {
+        infoItemBuilder.setOnCommentsSelectedListener(listener);
+    }
+
+    public void setUseMiniVariant(final boolean useMiniVariant) {
         this.useMiniVariant = useMiniVariant;
     }
 
-    public void setGridItemVariants(boolean useGridVariant) {
-        this.useGridVariant = useGridVariant;
+    public void setItemViewMode(final ItemViewMode itemViewMode) {
+        this.itemMode = itemViewMode;
     }
 
-    public void addInfoItemList(List<InfoItem> data) {
-        if (data != null) {
-            if (DEBUG) {
-                Log.d(TAG, "addInfoItemList() before > infoItemList.size() = " + infoItemList.size() + ", data.size() = " + data.size());
-            }
-
-            int offsetStart = sizeConsideringHeaderOffset();
-            infoItemList.addAll(data);
-
-            if (DEBUG) {
-                Log.d(TAG, "addInfoItemList() after > offsetStart = " + offsetStart + ", infoItemList.size() = " + infoItemList.size() + ", header = " + header + ", footer = " + footer + ", showFooter = " + showFooter);
-            }
-
-            notifyItemRangeInserted(offsetStart, data.size());
-
-            if (footer != null && showFooter) {
-                int footerNow = sizeConsideringHeaderOffset();
-                notifyItemMoved(offsetStart, footerNow);
-
-                if (DEBUG) Log.d(TAG, "addInfoItemList() footer from " + offsetStart + " to " + footerNow);
-            }
+    public void addInfoItemList(@Nullable final List<? extends InfoItem> data) {
+        if (data == null) {
+            return;
         }
-    }
+        if (DEBUG) {
+            Log.d(TAG, "addInfoItemList() before > infoItemList.size() = "
+                    + infoItemList.size() + ", data.size() = " + data.size());
+        }
 
-    public void addInfoItem(InfoItem data) {
-        if (data != null) {
+        final int offsetStart = sizeConsideringHeaderOffset();
+        infoItemList.addAll(data);
+
+        if (DEBUG) {
+            Log.d(TAG, "addInfoItemList() after > offsetStart = " + offsetStart + ", "
+                    + "infoItemList.size() = " + infoItemList.size() + ", "
+                    + "hasHeader = " + hasHeader() + ", "
+                    + "showFooter = " + showFooter);
+        }
+        notifyItemRangeInserted(offsetStart, data.size());
+
+        if (showFooter) {
+            final int footerNow = sizeConsideringHeaderOffset();
+            notifyItemMoved(offsetStart, footerNow);
+
             if (DEBUG) {
-                Log.d(TAG, "addInfoItem() before > infoItemList.size() = " + infoItemList.size() + ", thread = " + Thread.currentThread());
-            }
-
-            int positionInserted = sizeConsideringHeaderOffset();
-            infoItemList.add(data);
-
-            if (DEBUG) {
-                Log.d(TAG, "addInfoItem() after > position = " + positionInserted + ", infoItemList.size() = " + infoItemList.size() + ", header = " + header + ", footer = " + footer + ", showFooter = " + showFooter);
-            }
-            notifyItemInserted(positionInserted);
-
-            if (footer != null && showFooter) {
-                int footerNow = sizeConsideringHeaderOffset();
-                notifyItemMoved(positionInserted, footerNow);
-
-                if (DEBUG) Log.d(TAG, "addInfoItem() footer from " + positionInserted + " to " + footerNow);
+                Log.d(TAG, "addInfoItemList() footer from " + offsetStart
+                        + " to " + footerNow);
             }
         }
     }
@@ -161,92 +162,152 @@ public class InfoListAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolde
         notifyDataSetChanged();
     }
 
-    public void setHeader(View header) {
-        boolean changed = header != this.header;
-        this.header = header;
-        if (changed) notifyDataSetChanged();
+    public void setHeaderSupplier(@Nullable final Supplier<View> headerSupplier) {
+        final boolean changed = headerSupplier != this.headerSupplier;
+        this.headerSupplier = headerSupplier;
+        if (changed) {
+            notifyDataSetChanged();
+        }
     }
 
-    public void setFooter(View view) {
-        this.footer = view;
+    protected boolean hasHeader() {
+        return this.headerSupplier != null;
     }
 
-    public void showFooter(boolean show) {
-        if (DEBUG) Log.d(TAG, "showFooter() called with: show = [" + show + "]");
-        if (show == showFooter) return;
+    public void showFooter(final boolean show) {
+        if (DEBUG) {
+            Log.d(TAG, "showFooter() called with: show = [" + show + "]");
+        }
+        if (show == showFooter) {
+            return;
+        }
 
         showFooter = show;
-        if (show) notifyItemInserted(sizeConsideringHeaderOffset());
-        else notifyItemRemoved(sizeConsideringHeaderOffset());
+        if (show) {
+            notifyItemInserted(sizeConsideringHeaderOffset());
+        } else {
+            notifyItemRemoved(sizeConsideringHeaderOffset());
+        }
     }
 
-
     private int sizeConsideringHeaderOffset() {
-        int i = infoItemList.size() + (header != null ? 1 : 0);
-        if (DEBUG) Log.d(TAG, "sizeConsideringHeaderOffset() called → " + i);
+        final int i = infoItemList.size() + (hasHeader() ? 1 : 0);
+        if (DEBUG) {
+            Log.d(TAG, "sizeConsideringHeaderOffset() called → " + i);
+        }
         return i;
     }
 
-    public ArrayList<InfoItem> getItemsList() {
+    public List<InfoItem> getItemsList() {
         return infoItemList;
     }
 
     @Override
     public int getItemCount() {
         int count = infoItemList.size();
-        if (header != null) count++;
-        if (footer != null && showFooter) count++;
+        if (hasHeader()) {
+            count++;
+        }
+        if (showFooter) {
+            count++;
+        }
 
         if (DEBUG) {
-            Log.d(TAG, "getItemCount() called, count = " + count + ", infoItemList.size() = " + infoItemList.size() + ", header = " + header + ", footer = " + footer + ", showFooter = " + showFooter);
+            Log.d(TAG, "getItemCount() called with: "
+                    + "count = " + count + ", infoItemList.size() = " + infoItemList.size() + ", "
+                    + "hasHeader = " + hasHeader() + ", "
+                    + "showFooter = " + showFooter);
         }
         return count;
     }
 
+    @SuppressWarnings("FinalParameters")
     @Override
     public int getItemViewType(int position) {
-        if (DEBUG) Log.d(TAG, "getItemViewType() called with: position = [" + position + "]");
+        if (DEBUG) {
+            Log.d(TAG, "getItemViewType() called with: position = [" + position + "]");
+        }
 
-        if (header != null && position == 0) {
+        if (hasHeader() && position == 0) {
             return HEADER_TYPE;
-        } else if (header != null) {
+        } else if (hasHeader()) {
             position--;
         }
-        if (footer != null && position == infoItemList.size() && showFooter) {
+        if (position == infoItemList.size() && showFooter) {
             return FOOTER_TYPE;
         }
         final InfoItem item = infoItemList.get(position);
         switch (item.getInfoType()) {
             case STREAM:
-                return useGridVariant ? GRID_STREAM_HOLDER_TYPE : useMiniVariant ? MINI_STREAM_HOLDER_TYPE : STREAM_HOLDER_TYPE;
+                if (itemMode == ItemViewMode.CARD) {
+                    return CARD_STREAM_HOLDER_TYPE;
+                } else if (itemMode == ItemViewMode.GRID) {
+                    return GRID_STREAM_HOLDER_TYPE;
+                } else if (useMiniVariant) {
+                    return MINI_STREAM_HOLDER_TYPE;
+                } else {
+                    return STREAM_HOLDER_TYPE;
+                }
             case CHANNEL:
-                return useGridVariant ? GRID_CHANNEL_HOLDER_TYPE : useMiniVariant ? MINI_CHANNEL_HOLDER_TYPE : CHANNEL_HOLDER_TYPE;
+                if (itemMode == ItemViewMode.CARD) {
+                    return CARD_CHANNEL_HOLDER_TYPE;
+                } else if (itemMode == ItemViewMode.GRID) {
+                    return GRID_CHANNEL_HOLDER_TYPE;
+                } else if (useMiniVariant) {
+                    return MINI_CHANNEL_HOLDER_TYPE;
+                } else {
+                    return CHANNEL_HOLDER_TYPE;
+                }
             case PLAYLIST:
-                return useGridVariant ? GRID_PLAYLIST_HOLDER_TYPE : useMiniVariant ? MINI_PLAYLIST_HOLDER_TYPE : PLAYLIST_HOLDER_TYPE;
+                if (itemMode == ItemViewMode.CARD) {
+                    return CARD_PLAYLIST_HOLDER_TYPE;
+                } else if (itemMode == ItemViewMode.GRID) {
+                    return GRID_PLAYLIST_HOLDER_TYPE;
+                } else if (useMiniVariant) {
+                    return MINI_PLAYLIST_HOLDER_TYPE;
+                } else {
+                    return PLAYLIST_HOLDER_TYPE;
+                }
+            case COMMENT:
+                return COMMENT_HOLDER_TYPE;
             default:
-                Log.e(TAG, "Trollolo");
                 return -1;
         }
     }
 
+    @NonNull
     @Override
-    public RecyclerView.ViewHolder onCreateViewHolder(ViewGroup parent, int type) {
-        if (DEBUG) Log.d(TAG, "onCreateViewHolder() called with: parent = [" + parent + "], type = [" + type + "]");
+    public RecyclerView.ViewHolder onCreateViewHolder(@NonNull final ViewGroup parent,
+                                                      final int type) {
+        if (DEBUG) {
+            Log.d(TAG, "onCreateViewHolder() called with: "
+                    + "parent = [" + parent + "], type = [" + type + "]");
+        }
         switch (type) {
+            // #4475 and #3368
+            // Always create a new instance otherwise the same instance
+            // is sometimes reused which causes a crash
             case HEADER_TYPE:
-                return new HFHolder(header);
+                return new HFHolder(headerSupplier.get());
             case FOOTER_TYPE:
-                return new HFHolder(footer);
+                return new HFHolder(PignateFooterBinding
+                        .inflate(layoutInflater, parent, false)
+                        .getRoot()
+                );
             case MINI_STREAM_HOLDER_TYPE:
                 return new StreamMiniInfoItemHolder(infoItemBuilder, parent);
             case STREAM_HOLDER_TYPE:
                 return new StreamInfoItemHolder(infoItemBuilder, parent);
             case GRID_STREAM_HOLDER_TYPE:
                 return new StreamGridInfoItemHolder(infoItemBuilder, parent);
+            case CARD_STREAM_HOLDER_TYPE:
+                return new StreamCardInfoItemHolder(infoItemBuilder, parent);
             case MINI_CHANNEL_HOLDER_TYPE:
                 return new ChannelMiniInfoItemHolder(infoItemBuilder, parent);
             case CHANNEL_HOLDER_TYPE:
                 return new ChannelInfoItemHolder(infoItemBuilder, parent);
+            case CARD_CHANNEL_HOLDER_TYPE:
+                return new ChannelCardInfoItemHolder(infoItemBuilder, parent);
             case GRID_CHANNEL_HOLDER_TYPE:
                 return new ChannelGridInfoItemHolder(infoItemBuilder, parent);
             case MINI_PLAYLIST_HOLDER_TYPE:
@@ -255,34 +316,43 @@ public class InfoListAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolde
                 return new PlaylistInfoItemHolder(infoItemBuilder, parent);
             case GRID_PLAYLIST_HOLDER_TYPE:
                 return new PlaylistGridInfoItemHolder(infoItemBuilder, parent);
+            case CARD_PLAYLIST_HOLDER_TYPE:
+                return new PlaylistCardInfoItemHolder(infoItemBuilder, parent);
+            case COMMENT_HOLDER_TYPE:
+                return new CommentInfoItemHolder(infoItemBuilder, parent);
             default:
-                Log.e(TAG, "Trollolo");
                 return new FallbackViewHolder(new View(parent.getContext()));
         }
     }
 
     @Override
-    public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {
-        if (DEBUG) Log.d(TAG, "onBindViewHolder() called with: holder = [" + holder.getClass().getSimpleName() + "], position = [" + position + "]");
+    public void onBindViewHolder(@NonNull final RecyclerView.ViewHolder holder,
+                                 final int position) {
+        if (DEBUG) {
+            Log.d(TAG, "onBindViewHolder() called with: "
+                    + "holder = [" + holder.getClass().getSimpleName() + "], "
+                    + "position = [" + position + "]");
+        }
         if (holder instanceof InfoItemHolder) {
-            // If header isn't null, offset the items by -1
-            if (header != null) position--;
-
-            ((InfoItemHolder) holder).updateFromItem(infoItemList.get(position));
-        } else if (holder instanceof HFHolder && position == 0 && header != null) {
-            ((HFHolder) holder).view = header;
-        } else if (holder instanceof HFHolder && position == sizeConsideringHeaderOffset() && footer != null && showFooter) {
-            ((HFHolder) holder).view = footer;
+            ((InfoItemHolder) holder).updateFromItem(
+                    // If header is present, offset the items by -1
+                    infoItemList.get(hasHeader() ? position - 1 : position), recordManager);
         }
     }
 
     public GridLayoutManager.SpanSizeLookup getSpanSizeLookup(final int spanCount) {
         return new GridLayoutManager.SpanSizeLookup() {
             @Override
-            public int getSpanSize(int position) {
+            public int getSpanSize(final int position) {
                 final int type = getItemViewType(position);
                 return type == HEADER_TYPE || type == FOOTER_TYPE ? spanCount : 1;
             }
         };
+    }
+
+    static class HFHolder extends RecyclerView.ViewHolder {
+        HFHolder(final View v) {
+            super(v);
+        }
     }
 }
